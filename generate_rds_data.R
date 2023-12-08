@@ -17,3 +17,16 @@ for (csv_file in csv_files) {
   
   cat(paste("Saved", rds_file_path, "\n"))
 }
+
+# combine tracking data into one large file
+tracking.DT <- as.data.table(readRDS("rds_data/tracking_week_1.rds"))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_2.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_3.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_4.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_5.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_6.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_7.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_8.rds"))))
+tracking.DT <- rbindlist(list(tracking.DT, as.data.table(readRDS("rds_data/tracking_week_9.rds"))))
+
+saveRDS(tracking.DT, "rds_data/tracking_all.rds")
