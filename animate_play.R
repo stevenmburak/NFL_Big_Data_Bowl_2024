@@ -52,4 +52,4 @@ animate_play <- function(tracking_data_for_single_play) {
 }
 
 # example
-animate_play(tracking.DT[gameId == 2022102301 & playId == 1653])
+animate_play(tracking.DT[gameId == 2022091812 & playId == 1353])

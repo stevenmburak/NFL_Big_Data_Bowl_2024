@@ -3,24 +3,6 @@ title: "NFL Big Data Bowl 2024 - Probabilistic Tackling"
 output: html_notebook
 ---
 
-# Scope and Research Plan
-
-How can one rank defensive players in terms of their tackling ability based on empirical data? One could simply add up how many tackles each player has achieved and assign the players with the most tackles as the best tacklers. This approach would be too simplistic. It doesn't consider how many defensive plays in which the player was involved. A player with 5 tackles across 10 plays is a better tackler than a player with 5 tackles across 200 plays, all else equal. However, this still doesn't consider situational context. Despite being involved in most plays, a defensive lineman may rarely have a tackling opportunity on passing plays because they are pursuing the quarterback as opposed to wide receivers or tight ends - the usual targets for passing plays. Said defensive lineman is going to have a relatively low tackles-to-number of plays ratio. One needs to account for situational context.
-
-My strategy for the Big Data Bowl of 2024 is to follow the Metric Track and utilize the next gen stats tracking data to try to account for this situational variable. For every tackle play, my goal is to assign a tackling probability to each defensive player on the field. The probability assigned to each player will be predicted from a predictive model that uses variables such as distance from the receiver at the time of pass release, direction defensive player is facing at time of pass release, speed at which the defensive player is traveling, speed of ball carrier, etc.
-
-We will then have an assigned tackling probability (0-100%) for every defensive player for every play in which they were involved. We can then sum up these probabilities for each player to arrive at an expected number of tackles for each player. We can then compare how many tackles each player actually achieved to their expected number of tackles and see who has the best (and worst) actual-to-expected ratio.
-
-Example: Jalen Ramsey is right next to the wide receiver who catches the ball, and the receiver has no acceleration when the catch is made. Jalen's predicted probability of tackling the player will be relatively high compared to Raekwon Davis who is near the QB attempting a sack. Jalen may get a 90% tackling probability assigned to him, while Raekwon may get a 0.5% tackling probability assigned. If Jalen doesn't get the tackle, it will certainly hurt his actual-to-expected ratio, whereas Raekwon's actual-to-expected ratio will barely be impacted if he doesn't get the tackle.
-
-Given the vastly different factors that affect passing versus running plays, I am choosing to focus my predictive model on passing plays for this project. Although, the approach and concepts could certainly be applied to running plays; the predictive variables that go into the model would significantly different.
-
-## Definitions
-
-A few important definitions:
-
--   For purposes of this project, I am defining a "tackle" as a tackle, assisted tackle, or a forced fumble. All 3 scenarios are being treated as equal in value.
-
 # Data Cleansing and Structuring
 
 ```{r Setup, include=FALSE}
@@ -32,6 +14,7 @@ library(RSQLite, quietly = TRUE)
 library(ggplot2, quietly = TRUE)
 
 # connect to SQLite DB
+# I've stored all the tracking data as one data table in SQLite
 sqlite_con <- dbConnect(RSQLite::SQLite(), dbname = "sqlite_data/nfl.db")
 
 # load key data tables. tracking is NOT loaded here, as it's huge. we'll load a subset of that later
@@ -39,6 +22,11 @@ tackles.DT <- as.data.table(readRDS("rds_data/tackles.rds"))
 plays.DT <- as.data.table(readRDS("rds_data/plays.rds"))
 games.DT <- as.data.table(readRDS("rds_data/games.rds"))
 players.DT <- as.data.table(readRDS("rds_data/players.rds"))
+
+
+# color styling
+my.green <- "#50C878"	  #"#0f8a59"
+my.red <- "#EC5800"
 ```
 
 ```{r Plays_of_Interest, include=FALSE}
@@ -120,7 +108,7 @@ rm(off.def.teams.by.play)
 
 ```{r include=FALSE}
 
-# want to add a field to the tracking data that shows if the player was the player (or one of the players) that got the tackle. this will be useful for our animation
+# want to add a field to the tracking data that shows if the player was the player (or one of the players) that got the tackle. this will be useful for our animations
 
 tracking.DT <- merge(tracking.DT,
                      tackles.DT[, .(gameId, playId, nflId, should_be_tackle)],
@@ -157,18 +145,31 @@ model.DT[is.na(should_be_tackle), should_be_tackle := 0]
 
 ```
 
+## Simple Actuals
+
 It's worth pausing here, as we now have a database of each player and how many tackles (remember, tackle here means a tackle, assist, or a forced fumble) they made across the 9 weeks of data. We'll see how these raw tackle counts - unadjusted for situational context - stack up against our final model.
 
 ```{r echo=FALSE}
+# show top 20 actual tackle players
 simple.tackles.by.player <- model.DT[, .(Tackles = sum(should_be_tackle)), by = .(nflId, displayName)]
 simple.tackles.by.player[, name_plus_id := paste(displayName, " (nflId ", nflId, ")", sep="")]
 
-simple.tackles.by.player <- simple.tackles.by.player[order(-Tackles)]
-top_25_players <- simple.tackles.by.player[1:20]
+# add position
+simple.tackles.by.player <- merge(simple.tackles.by.player,
+                                  players.DT[, .(nflId, position)],
+                                  by = c("nflId"))
 
-ggplot(top_25_players, aes(x = Tackles, y = reorder(displayName, Tackles))) +
+# name + position
+simple.tackles.by.player[, name_and_pos := paste(displayName, " (", position, ")", sep="")]
+
+simple.tackles.by.player <- simple.tackles.by.player[order(-Tackles)]
+simple_top_players <- simple.tackles.by.player[1:20]
+
+#
+
+ggplot(simple_top_players, aes(x = Tackles, y = reorder(name_and_pos, Tackles))) +
   geom_bar(stat = "identity", fill = "skyblue") +
-  geom_text(aes(label = Tackles), hjust = -0.1, size = 3) +
+  geom_text(aes(label = Tackles), hjust = 1.5, size = 3) +
   labs(title = 'Passing Tackles by Player (Top 20)',
        x = '') +
   theme_minimal() +
@@ -177,6 +178,8 @@ ggplot(top_25_players, aes(x = Tackles, y = reorder(displayName, Tackles))) +
         axis.title.y = element_blank(),
         panel.grid = element_blank())
 ```
+
+## Feature Engineering
 
 ```{r Ball_Carrier_Data, include=FALSE}
 
@@ -234,11 +237,6 @@ tracking.DT[, dir_relative_to_receiver := angle_relative_to_point(x,
                                                                 receiver_at_pass_catch_y)]
 
 
-
-# remove no longer needed stats to save space
-#tracking.DT[, receiver_at_pass_catch_x := NULL]
-#tracking.DT[, receiver_at_pass_catch_y := NULL]
-
 # add calculated stats to model data
 model.DT <- merge(model.DT,
                   tracking.DT[event == "pass_outcome_caught",
@@ -252,11 +250,51 @@ model.DT <- merge(model.DT,
                   all.x = TRUE
                   )
 
- 
-
-# remove distance from receiver from tracking data (save space)
-#tracking.DT[, dist_from_receiver_at_pass_catch := NULL]
 ```
+
+### Proximity to Sideline Calcs
+
+```{r}
+# proximity to sideline data
+tracking.DT[, receiver_y_revised := ifelse(receiver_at_pass_catch_y < 0, 0,
+                                      ifelse(receiver_at_pass_catch_y > 53.3, 53.3,
+                                         receiver_at_pass_catch_y))]
+
+tracking.DT[, receiver_dist_from_sideline := ifelse(receiver_y_revised < 53.3/2,
+                                                    receiver_y_revised - 0,
+                                                    53.3 - receiver_y_revised)]
+
+tracking.DT[, y_revised := ifelse(y < 0, 0,
+                                      ifelse(y > 53.3, 53.3,
+                                         y))]
+
+
+tracking.DT[, dist_from_receivers_sideline := ifelse(receiver_y_revised < 53.3/2,
+                                                    y_revised - 0,
+                                                    53.3 - y_revised)]
+
+# equals 1 if defender is further from receiver's sideline than receiver, 0 if not
+# idea here is that if defender is further, they have opportunity to push receiver out of bounds
+tracking.DT[, in_ideal_sideline_pos := ifelse(dist_from_receivers_sideline > receiver_dist_from_sideline, 1, 0)]
+
+# sideline position index
+# idea here is that the defender will get a high sideline position index (good thing) if they are further from the receiver's sideline than the receiver AND if the receiver is close to the sideline
+tracking.DT[, sideline_position_index := ifelse(receiver_dist_from_sideline == 0, in_ideal_sideline_pos, in_ideal_sideline_pos / receiver_dist_from_sideline)]
+
+
+# add calculated stats to model data
+model.DT <- merge(model.DT,
+                  tracking.DT[event == "pass_outcome_caught",
+                              .(gameId, playId, nflId,
+                                receiver_dist_from_sideline,
+                                in_ideal_sideline_pos,
+                                sideline_position_index)],
+                  by = c("gameId", "playId", "nflId"),
+                  all.x = TRUE
+                  )
+```
+
+### Relative Angles and Movement Calculations
 
 ```{r Add_Angle_Direction_Data, include=FALSE}
 
@@ -296,12 +334,6 @@ tracking.DT[, diff_in_dir_from_receiver_at_pass_catch := ifelse(diff_in_dir_from
 tracking.DT[, diff_in_s_from_receiver_at_pass_catch := s - receiver_at_pass_catch_s]
 tracking.DT[, diff_in_a_from_receiver_at_pass_catch := a - receiver_at_pass_catch_a]
 
-# remove no longer needed stats to save space
-#tracking.DT[, receiver_at_pass_catch_o := NULL]
-#tracking.DT[, receiver_at_pass_catch_dir := NULL]
-#tracking.DT[, receiver_at_pass_catch_s := NULL]
-#tracking.DT[, receiver_at_pass_catch_a := NULL]
-
 # add stats to model data
 model.DT <- merge(model.DT,
                   tracking.DT[event == "pass_outcome_caught",
@@ -311,16 +343,13 @@ model.DT <- merge(model.DT,
                                 diff_in_o_from_receiver_at_pass_catch,
                                 diff_in_dir_from_receiver_at_pass_catch,
                                 diff_in_s_from_receiver_at_pass_catch,
-                                diff_in_a_from_receiver_at_pass_catch)],
+                                diff_in_a_from_receiver_at_pass_catch,
+                                receiver_at_pass_catch_s,
+                                receiver_at_pass_catch_a)],
                   by = c("gameId", "playId", "nflId"),
                   all.x = TRUE
                   )
 
-# remove stats from tracking data (save space)
-#tracking.DT[, diff_in_o_from_receiver_at_pass_catch := NULL]
-#tracking.DT[, diff_in_dir_from_receiver_at_pass_catch := NULL]
-#tracking.DT[, diff_in_s_from_receiver_at_pass_catch := NULL]
-#tracking.DT[, diff_in_a_from_receiver_at_pass_catch := NULL]
 ```
 
 ```{r include=FALSE}
@@ -351,11 +380,11 @@ model.DT[, dir_vel := s*cos(dir_relative_to_receiver*pi/180)]
 ```{r include=FALSE}
 # make some columns factors
 model.DT[, front_or_behind_receiver := factor(front_or_behind_receiver)]
-
 model.DT[, should_be_tackle_factor := factor(should_be_tackle)]
+model.DT[, in_ideal_sideline_pos := factor(in_ideal_sideline_pos)]
 ```
 
-## Find Blockers by Defender
+### Find Blockers by Defender
 
 ```{r include=FALSE}
 
@@ -418,22 +447,6 @@ impactful.blockers.summary <- ind.blocker.and.defender.data[, .(Total_Impactful_
 rm(ind.blocker.and.defender.data)
 gc()
 
-# impactful.blockers.summary <- merge(impactful.blockers.summary,
-#                                     tackles.DT[, .(gameId, playId, nflId, should_be_tackle)],
-#                                     by.x = c("gameId", "playId", "defenderId"),
-#                                     by.y = c("gameId", "playId", "nflId"),
-#                                     all.x = TRUE)
-# 
-# # change NAs to 0
-# impactful.blockers.summary[is.na(should_be_tackle), should_be_tackle := 0]
-# 
-# ggplot(model.DT, aes(x = factor(Total_Impactful_Blockers), fill = factor(should_be_tackle))) +
-#   geom_bar(position = "fill") +
-#   labs(title = "Relationship between should_be_tackle and Total_Impactful_Blockers",
-#        x = "should_be_tackle",
-#        y = "Count") +
-#   theme_minimal()
-
 # add to model.DT
 model.DT <- merge(model.DT,
                   impactful.blockers.summary,
@@ -451,7 +464,7 @@ rm(impactful.blockers.summary)
 
 ```
 
-## Rank Defenders by Distance
+### Rank Defenders by Distance
 
 ```{r include=FALSE}
 
@@ -487,13 +500,6 @@ defender.data[, def_dist_rank_level := ifelse(def_dist_rank == 1, "1",
                                         ifelse(def_dist_rank == 2, "2",
                                          ifelse(def_dist_rank == 3, "3", "4+")))]
 
-ggplot(defender.data, aes(x = factor(def_dist_rank_level), fill = factor(should_be_tackle))) +
-  geom_bar(position = "fill") +
-  labs(title = "",
-       x = "def_dist_rank_level",
-       y = "Freq") +
-  theme_minimal()
-
 # add to model.DT
 model.DT <- merge(model.DT,
                   defender.data[, .(gameId, playId, defenderId, def_dist_rank_level)],
@@ -511,136 +517,160 @@ rm(defender.data)
 
 # Build Predictive Model for Tackling Probability
 
-## Determine Variables for Logistic Regression Model
+## Plots of Independent Variables
 
 ```{r eval=FALSE, include=FALSE}
 
 # plot the independent variables against the target tackle variable
 
+yes.color <- my.green
+no.color <- "lightgray"
+
 # distance from receiver
-dist.from.rec.plot <- ggplot(model.DT, aes(x = dist_from_receiver_at_pass_catch, fill = factor(should_be_tackle))) +
+ggplot(model.DT, aes(x = dist_from_receiver_at_pass_catch, fill = factor(should_be_tackle))) +
   geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.5, position = "identity", alpha = 0.7) +
   labs(title = NULL,
        x = "Defender's Distance from Receiver at Time of Catch",
-       y = "Percentage") +
-  scale_fill_manual(values = c("lightblue", "coral"), name = "Tackle Resulted",
+       y = "Frequency") +
+  scale_fill_manual(values = c(no.color, yes.color), name = "Tackle Resulted",
                     labels = c("0" = "No", "1" = "Yes")) +
   theme_minimal() +
-  theme(axis.title.y = element_blank(),
+  theme(#axis.title.y = element_blank(),
         axis.text.y = element_blank(),
         panel.grid.major.y = element_blank(),
         panel.grid.minor.y = element_blank(),
         legend.position = c(0.75, 0.75),
-        legend.text = element_text(size = 16),
-        legend.title = element_text(size = 16), 
-        axis.text.x = element_text(size = 14),    
-        axis.title.x = element_text(size = 14),
-        legend.box.background = element_rect(color = "black"))   
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 12),    
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        legend.box.background = element_rect(color = "black"))  
+
+# defender distance rank
+ggplot(model.DT, aes(x = factor(def_dist_rank_level), fill = factor(should_be_tackle))) +
+  geom_bar(position = "fill") +
+  labs(title = "",
+       x = "Defender's Distance from Receiver Rank",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(#axis.text.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  scale_fill_manual(name = "Tackle Resulted",
+                    values = c("0" = no.color, "1" = yes.color),
+                    labels = c("No", "Yes")) +
+  theme(legend.position = c(0.5, 1), legend.justification = c(0.5, 1), legend.box.just = "center", 
+        legend.box.background = element_rect(color = "black"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 12),    
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12))
 
 # front or behind receiver
-front.behind.plot <- ggplot(model.DT, aes(x = factor(should_be_tackle), fill = factor(front_or_behind_receiver))) +
+ggplot(model.DT, aes(x = factor(should_be_tackle), fill = factor(front_or_behind_receiver))) +
   geom_bar(position = "fill") +
   scale_x_discrete(labels = c("No", "Yes")) +
   labs(title = NULL,
-       x = "Tackle Resulted") +
+       x = "Tackle Resulted",
+       y = "Frequency") +
   theme_minimal() +
-  theme(axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
+  theme(#axis.title.y = element_blank(),
+        #axis.text.y = element_blank(),
         axis.ticks.y = element_blank(),
-        panel.grid.major.y = element_blank(),
-        panel.grid.minor.y = element_blank()) +
+        #panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 12),    
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12)) +
   guides(fill = guide_legend(title = NULL)) +
-  scale_fill_manual(values = c("lightblue", "coral")) +
+  scale_fill_manual(values = c(no.color, yes.color)) +
   geom_text(stat = 'count', aes(label = ifelse(front_or_behind_receiver == "behind", "Behind Receiver", "In Front of Receiver")),
             position = position_fill(vjust = 0.5)) +
   theme(legend.position = "none")
 
-# o_vel
-o_vel.plot <- ggplot(model.DT, aes(x = o_vel, fill = factor(should_be_tackle))) +
-  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.5, position = "identity", alpha = 0.7) +
-  labs(title = NULL,
-       x = "Orientational Velocity",
-       y = "Percentage") +
-  scale_fill_manual(values = c("lightblue", "coral"), name = "Tackle Resulted",
-                    labels = c("0" = "No", "1" = "Yes")) +
-  theme_minimal() +
-  theme(axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        panel.grid.major.y = element_blank(),
-        panel.grid.minor.y = element_blank(),
-        legend.position = c(0.25, 0.75),
-        legend.text = element_text(size = 16),
-        legend.title = element_text(size = 16), 
-        axis.text.x = element_text(size = 14),    
-        axis.title.x = element_text(size = 14),
-        legend.box.background = element_rect(color = "black"))
-
 # dir_vel
-dir_vel.plot <- ggplot(model.DT, aes(x = dir_vel, fill = factor(should_be_tackle))) +
+ggplot(model.DT, aes(x = dir_vel, fill = factor(should_be_tackle))) +
   geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.5, position = "identity", alpha = 0.7) +
   labs(title = NULL,
        x = "Directional Velocity",
-       y = "Percentage") +
-  scale_fill_manual(values = c("lightblue", "coral"), name = "Tackle Resulted",
+       y = "Frequency") +
+  scale_fill_manual(values = c(no.color, yes.color), name = "Tackle Resulted",
                     labels = c("0" = "No", "1" = "Yes")) +
   theme_minimal() +
-  theme(axis.title.y = element_blank(),
+  theme(#axis.title.y = element_blank(),
         axis.text.y = element_blank(),
         panel.grid.major.y = element_blank(),
         panel.grid.minor.y = element_blank(),
         legend.position = c(0.25, 0.75),
-        legend.text = element_text(size = 16),
-        legend.title = element_text(size = 16), 
-        axis.text.x = element_text(size = 14),    
-        axis.title.x = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 12),    
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
         legend.box.background = element_rect(color = "black"))
 
-# # show plots in a grid
-# par(mfrow=c(2, 2))
-# dist.from.rec.plot
-# front.behind.plot
-# o_vel.plot
-# dir_vel.plot
 
-# use for testing other variables
-ggplot(model.DT, aes(x = factor(should_be_tackle), fill = factor(Impactful_Blocker_Level))) +
-  geom_bar(position = "fill", stat = "count") +
+# angle vs dir_vel
+ggplot(model.DT, aes(x = dir_relative_to_receiver, y = dir_vel)) +
+  geom_point(size = 0.4, color = "lightgray") + 
+  geom_vline(xintercept = 90, linetype = "dashed", color = "red") +
+  geom_text(aes(x = 90, y = -7.5, label = "90 Degrees"), 
+            vjust = 0, hjust = 0.5, color = "red") +
+  labs(x = "Angle of Direction Relative to Receiver's Position",
+       y = "Directional Velocity") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 12, margin = margin(t = 10)))
+
+# impactful blockers
+ggplot(model.DT, aes(x = factor(Impactful_Blocker_Level),
+                     fill = factor(should_be_tackle))) +
+  geom_bar(position = "fill") +
+  labs(title = "",
+       x = "Impactful Blocker Level",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(#axis.text.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12), 
+    axis.text.x = element_text(size = 12),    
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12)) +
+  scale_fill_manual(name = "Tackle Resulted",
+                    values = c("0" = no.color, "1" = yes.color),
+                    labels = c("No", "Yes")) +
+  scale_x_discrete(labels = c("1 or More", "Zero")) +
+  theme(legend.position = c(0.5, 1), legend.justification = c(0.5, 1), legend.box.just = "center", 
+        legend.box.background = element_rect(color = "black"))
+
+# receiver distance from sideline
+ggplot(model.DT, aes(x = receiver_dist_from_sideline, fill = factor(should_be_tackle))) +
+  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.2, position = "identity", alpha = 0.7) +
   labs(title = NULL,
-       x = "should_be_tackle",
-       y = "Proportion")
-  #scale_fill_manual(values = c("red", "green", "blue", "orange")) +  # Adjust colors as needed
-  #coord_flip()  # Rotate the plot to make it horizontal
+       x = "Receiver's Distance from Nearest Sideline",
+       y = "Frequency") +
+  scale_fill_manual(values = c(no.color, yes.color), name = "Tackle Resulted",
+                    labels = c("0" = "No", "1" = "Yes")) +
+  theme_minimal() +
+  theme(#axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.position = c(0.1, 0.8),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12), 
+        axis.text.x = element_text(size = 12),    
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        legend.box.background = element_rect(color = "black"))
+
+
 ```
-
-This model will focus on assigning tackling probabilities *at the time of the catch*. Below are the predictive variables in our model that can all be calculated at the time of the catch:
-
--   **dist_from_receiver_at_pass_catch**: The defender's distance from the receiver.
-
--   **front_or_behind_receiver**: Is defender in front of or behind the receiver? (Yes / No)
-
--   **o_vel**: The orientational velocity of the defender relative to the position of the receiver. It accounts for both speed and direction of orientation (which way the defender is facing) relative to the position of the receiver. If the defender is moving at speed 2 but facing the exact opposite direction of the receiver's position, their o_vel will be -2. On the contrary, if the defender is moving at speed 2 and facing the exact direction of the receiver's position, their o_vel will be 2. This is achieved by applying the cosine function to their relative orientation angle.
-
--   **dir_vel**: This is similar to the orientational velocity above, but the relative angle is derived from the defender's direction of *movement* as opposed to the direction they are facing.
-
--   **def_dist_rank_level:** This variable utilizes the distance of each defender from the receiver at the time of the catch, but it ranks the defenders from closest to furthest. Rank/level "1" is the closest defender, then "2" and "3", and finally level "4+" is any defender ranked 4 or higher.
-
--   **Impactful_Blocker_Level**: 2 levels that indicate if there are 0 impactful blockers for that defender or 1+ impactful blockers for that defender. An impactful blocker is defined when these 2 conditions are met:
-
-    1.  The blocker is within the radius of the radius between the defender and the receiver at the time of the catch. For example, if the defender in question is 10 yards from the receiver and the blocker in question is 8 yards from the receiver, then this condition is met.
-
-    2.  The blocker's x coordinate must be between the defender in question and the receiver. This is to help eliminate blockers who are within the radius but on the opposit side of the receiver as the defender.
-
-There were some variables I considered and tested, but they did not add meaningful value to the model.
-
--   **dir_relative_to_receiver**: Direction angle relative to receiver's position (0 degrees if defender is moving toward receiver's position directly; 180 degrees if defender is moving directly opposite of the receiver's position). This variable is essentially the dir_vel variable above but missing the speed information.
-
--   **o_relative_to_receiver**: Orientation angle of defender relative to receiver's position (0 degrees if defender is facing receiver's position directly; 180 degrees if defender is facing directly opposite of the receiver's position).
-
--   **a:** The acceleration of the defender.
-
--   **s:** The speed of the defender. This variable was not very meaningful on its own, but it was meaningful once I combined it with relative orientation and direction information above.
-
-Our target variable is called **should_be_tackle** and has values of 0's and 1's, where 0 represents no tackle and 1 represents a tackle.
 
 ## Splitting Data into Training and Testing
 
@@ -674,25 +704,30 @@ test_data <- model.DT[model_split_group == "Test"]
 ## Define Logistic Regression Model
 
 ```{r}
-
-# Training model
-logistic_model <- glm(should_be_tackle ~
+# define model call function depending on training data selected
+log_model_call <- function(which_data) {
+  model.to.return <- glm(should_be_tackle ~
                         # variables to include
                         dist_from_receiver_at_pass_catch +
                         front_or_behind_receiver +
                         #o_relative_to_receiver +
-                        o_vel +
+                        #o_vel +
                         dir_vel +
                         #s +
-                        a +
+                        #a +
                         Impactful_Blocker_Level +
-                        def_dist_rank_level
-                        #dir_relative_to_receiver
+                        def_dist_rank_level +
+                        receiver_dist_from_sideline
+                        #receiver_at_pass_catch_s
                         ,
-                      
-                        data = train_data,
+                        data = which_data,
                         family = binomial(link = "logit"))
-#logistic_model
+  
+  return(model.to.return)
+}
+
+# Training model
+logistic_model <- log_model_call(which_data = train_data)
  
 # Summary
 summary(logistic_model)
@@ -713,6 +748,18 @@ results <- test_data[, .(total_actual = sum(should_be_tackle),
                          total_expected = sum(predict_reg))]
 results[, ratio := total_actual / total_expected]
 
+print(paste("AvE Ratio: ", results$ratio))
+```
+
+## Re-Train Model with All Data
+
+```{r}
+# train with all data
+logistic_model <- log_model_call(which_data = model.DT)
+
+summary(logistic_model)
+
+
 # now apply model to both train and testing data
 predict_all <- cbind(model.DT, predict(logistic_model, model.DT, type = "response"))
 # rename V2
@@ -721,7 +768,7 @@ predict_all[, Prediction := round(Prediction,4)]
 predict_all[, abs_error := abs(Prediction - should_be_tackle)]
 ```
 
-## Normalize Probabilities
+## Normalize and Fine-Tune Probabilities
 
 ```{r}
 # normalized probabilities add up to 1 for each play
@@ -749,32 +796,114 @@ if (nrow(pred.check[round(Total_Predict_for_Play,0) != 1]) != 0) {
   UNDECLARED()
 }
 
+# allocating low probabilities to higher players
+low.prob.threshold <- .05
+predict_all[, Low_Prob := ifelse(Revised_Prediction < low.prob.threshold, "Y", "N")]
 
+low.probs.to.allocate <- predict_all[Low_Prob == "Y",
+                                           .(Total_Low_Prob = sum(Revised_Prediction),
+                                             Low_Prob_Ct = .N),
+                                           by = .(gameId, playId)]
+
+predict_all <- merge(predict_all,
+                     low.probs.to.allocate,
+                     by = c("gameId", "playId"),
+                     # keep all plays as some won't be in the low prob data
+                     all.x = TRUE)
+
+# change NAs to 0
+predict_all[is.na(Total_Low_Prob), Total_Low_Prob := 0]
+predict_all[is.na(Low_Prob_Ct), Low_Prob_Ct := 0]
+
+# sum total revised prediction for each play
+total.probs <- predict_all[, .(Total_Revised_Prediction_for_Play = sum(Revised_Prediction)),
+                           by = .(gameId, playId)]
+
+predict_all <- merge(predict_all,
+                     total.probs,
+                     by = c("gameId", "playId"),
+                     all.x = TRUE)
+
+predict_all[, Allocated_Prediction := ifelse(Low_Prob == "Y", 0, # low probs get 0% prediction
+    # otherwise, allocate the total low probability needing to be allocated based on the ratio that each high probability defender contributes to the high probability total                                     
+    Revised_Prediction + (Total_Low_Prob * Revised_Prediction / (Total_Revised_Prediction_for_Play - Total_Low_Prob)))]
+
+# cap at 99%
+predict_all[, Allocated_Prediction := ifelse(Allocated_Prediction > 0.99, 0.99, Allocated_Prediction)]
 ```
 
-```{r include=FALSE}
-# see plot of predictions vs result
-ggplot(predict_all[should_be_tackle == 0], aes(x = Revised_Prediction, fill = factor(should_be_tackle))) +
-  geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.01, position = "identity", alpha = 0.7) +
-  labs(title = NULL,
-       x = "Prediction",
-       y = "Percentage") +
-  scale_fill_manual(values = c("lightblue", "coral"), name = "Tackle Resulted",
-                    labels = c("0" = "No", "1" = "Yes")) +
+## Plot All Plays
+
+```{r eval=FALSE, include=FALSE}
+# plot each play's probability and whether or not a tackle resulted
+ggplot(predict_all[Allocated_Prediction >= 0.05], aes(x = reorder(seq_along(Allocated_Prediction), -Allocated_Prediction),
+                          y = Allocated_Prediction,
+                          fill = factor(should_be_tackle))) +
+  geom_bar(stat = "identity", position = "identity") +  # Remove the gap between bars
+  scale_fill_manual(values = c("lightgray", my.green), 
+                    name = "Tackle Resulted",
+                    labels = c("No", "Yes")) +
   theme_minimal() +
-  theme(axis.title.y = element_blank(),
-        axis.text.y = element_blank(),
-        panel.grid.major.y = element_blank(),
-        panel.grid.minor.y = element_blank(),
-        legend.position = c(0.25, 0.75),
-        legend.text = element_text(size = 16),
-        legend.title = element_text(size = 16), 
-        axis.text.x = element_text(size = 14),    
-        axis.title.x = element_text(size = 14),
-        legend.box.background = element_rect(color = "black"))
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12), 
+    #axis.text.x = element_text(size = 12),    
+    #axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.position = c(0.9, 0.9),
+    legend.justification = c(1, 1),
+    legend.box.background = element_rect(color = "black"),
+    legend.box.margin = margin(t = 1, r = 1)
+  ) +
+  labs(y = "Modeled Probability", fill = "Tackle Resulted")
 ```
 
-## Probit Regression Model
+## Example Play
+
+```{r}
+# gameId == 2022092200 & playId == 3053
+
+example.play <- predict_all[gameId == 2022092200 & playId == 3053]
+
+# add jersey number
+example.play <- merge(example.play,
+                      unique(tracking.DT[,.(gameId, playId, nflId, jerseyNumber)]),
+                      by = c("gameId", "playId", "nflId"))
+
+example.play <- example.play[order(-example.play$Allocated_Prediction)]
+                             
+#write.csv(example.play, "images_for_submission/example.play.csv")
+
+```
+
+```{r eval=FALSE, include=FALSE}
+# # see plot of predictions vs result
+# ggplot(predict_all[should_be_tackle == 0], aes(x = Revised_Prediction, fill = factor(should_be_tackle))) +
+#   geom_histogram(aes(y = after_stat(count / sum(count))), binwidth = 0.01, position = "identity", alpha = 0.7) +
+#   labs(title = NULL,
+#        x = "Prediction",
+#        y = "Percentage") +
+#   scale_fill_manual(values = c("lightblue", "coral"), name = "Tackle Resulted",
+#                     labels = c("0" = "No", "1" = "Yes")) +
+#   theme_minimal() +
+#   theme(axis.title.y = element_blank(),
+#         axis.text.y = element_blank(),
+#         panel.grid.major.y = element_blank(),
+#         panel.grid.minor.y = element_blank(),
+#         legend.position = c(0.25, 0.75),
+#         legend.text = element_text(size = 16),
+#         legend.title = element_text(size = 16), 
+#         axis.text.x = element_text(size = 14),    
+#         axis.title.x = element_text(size = 14),
+#         legend.box.background = element_rect(color = "black"))
+```
+
+### Probit Regression Model
 
 ```{r include=FALSE}
 # # Training model
@@ -813,7 +942,7 @@ fit.tree = rpart(should_be_tackle ~
                         def_dist_rank_level +
                         Impactful_Blocker_Level
                         ,
-                         data = train_data,
+                         data = model.DT,
                          method = "class",
                          cp=0.01)
 
@@ -825,31 +954,46 @@ rpart.plot(fit.tree)
 
 ```{r include=FALSE}
 
+show.expected.threshold <- 15
+
 act.vs.exp <- predict_all[, .(num_plays = .N,
                 total_actual = sum(should_be_tackle),
-                total_expected = sum(Revised_Prediction)),
+                total_expected = sum(Allocated_Prediction)),
             by = .(nflId, displayName)]
 
 act.vs.exp[, ave.ratio := total_actual / total_expected]
 
+# add position
+act.vs.exp <- merge(act.vs.exp,
+                    players.DT[, .(nflId, position)],
+                    by = c("nflId"))
+
+# name + position
+act.vs.exp[, name_and_pos := paste(displayName, " (", position, ")", sep="")]
+
 # plot
-ggplot(act.vs.exp[total_expected >= 15], aes(x = total_expected, y = total_actual, color = ave.ratio < 1)) +
+ggplot(act.vs.exp[total_expected >= show.expected.threshold], aes(x = total_expected, y = total_actual, color = ave.ratio < 1)) +
   geom_point() +
   geom_abline(intercept = 0, slope = 1, color = "red") +
   labs(x = "Expected Tackles", y = "Actual Tackles") +
-  xlim(0, max(act.vs.exp$total_expected)) +
-  ylim(0, max(act.vs.exp$total_actual)) +
-  scale_color_manual(values = c("lightgreen", "coral"),
+  xlim(10, max(act.vs.exp$total_expected)) +
+  ylim(10, max(act.vs.exp$total_actual)) +
+  scale_color_manual(values = c(my.green, my.red),
                      labels = c("More Tackles than Expected", "Less Tackles than Expected")) +
   theme_minimal() +
   theme(legend.title = element_blank(),
-        legend.position = c(0.075, 0.925),
+        legend.position = c(0.01, 0.925),
         legend.justification = c(0, 1),
         legend.background = element_rect(fill = "transparent", color = NA),
-        legend.box.background = element_rect(fill = "white", color = "black"))
+        legend.box.background = element_rect(fill = "white", color = "black"),
+        legend.text = element_text(size = 9),
+        #legend.title = element_text(size = 12), 
+        #axis.text.x = element_text(size = 12),    
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12))
 
-print(paste("# Act < Exp: ", nrow(act.vs.exp[total_expected >= 15 & total_actual < total_expected])))
-print(paste("# Act >= Exp: ", nrow(act.vs.exp[total_expected >= 15 & total_actual >= total_expected])))
+print(paste("# Act < Exp: ", nrow(act.vs.exp[total_expected >= show.expected.threshold & total_actual < total_expected])))
+print(paste("# Act >= Exp: ", nrow(act.vs.exp[total_expected >= show.expected.threshold & total_actual >= total_expected])))
 
 print(sum(act.vs.exp$total_actual))
 print(sum(act.vs.exp$total_expected))
@@ -863,18 +1007,16 @@ print(sum(act.vs.exp$total_expected))
 
 ## Compare Top 20 from Earlier
 
-Recall we showed the top 20 players with the most passing tackles. Let's see if these players' tackles are impressive or not according to our logistic regression model. The below chart has the same 20 players as before, but it now sorts them by their actual-to-expected ratios instead of by their total tackles. We can see that most of these players do indeed perform better than expected - some more than others. The 2 exceptions who perform worse than expected are Mykal Walker and Devin Lloyd. Eddie Jackson and Jevon Holland are the best performers in the group.
-
 ```{r}
 act.v.exp.top.actual <- act.vs.exp[order(-total_actual)]
 
 act.v.exp.top.actual <- act.v.exp.top.actual[1:20]
 
-ggplot(act.v.exp.top.actual, aes(x = ave.ratio, y = reorder(displayName, ave.ratio))) +
-  geom_bar(aes(fill = ifelse(ave.ratio < 1, 'coral', 'lightgreen')), stat = "identity") +
-  geom_text(aes(label = round(ave.ratio, 2)), hjust = 2, size = 3) +
-  labs(title = 'Passing Tackles by Player (Top 20)',
-       x = '') +
+ggplot(act.v.exp.top.actual, aes(x = ave.ratio, y = reorder(name_and_pos, total_actual))) +
+  geom_bar(aes(fill = ifelse(ave.ratio < 1, my.red, my.green)), stat = "identity") +
+  geom_text(aes(label = round(ave.ratio, 2)), hjust = 2, vjust = 0.35, size = 3) +
+  labs(title = 'AvE Ratios for 20 Players with Most Actual Tackles',
+       x = NULL) +
   theme_minimal() +
   theme(axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
@@ -883,29 +1025,22 @@ ggplot(act.v.exp.top.actual, aes(x = ave.ratio, y = reorder(displayName, ave.rat
   scale_fill_identity()
 ```
 
-Of course, this is only looking at the same 20 players we looked at before. Let's expand this. After filtering results down to players with at least 15 expected tackles (to weed out mainly lineman who have few expected tackles and few actual tackles across passing plays), below I show the 10 best actual-to-expected ratios and the 10 worst actual-to-expected ratios.
+## Best and Worst 10
 
 ```{r}
 act.v.exp.selected <- act.vs.exp[order(-ave.ratio)]
-act.v.exp.selected <- act.v.exp.selected[total_expected >= 15]
+# only consider those with at least 15 expected
+act.v.exp.selected <- act.v.exp.selected[total_expected >= show.expected.threshold]
 
 act.v.exp.selected <- rbind(head(act.v.exp.selected, 10), tail(act.v.exp.selected, 10))
 
-# add position
-act.v.exp.selected <- merge(act.v.exp.selected,
-                            players.DT[, .(nflId, position)],
-                            by = c("nflId"))
-
-# name + position
-act.v.exp.selected[, name_and_pos := paste(displayName, " (", position, ")", sep="")]
-
 # selected best 10 and worst 10
 ggplot(act.v.exp.selected, aes(x = ave.ratio, y = reorder(name_and_pos, ave.ratio))) +
-  geom_bar(aes(fill = ifelse(ave.ratio < 1, 'coral', 'lightgreen')), stat = "identity") +
-  geom_text(aes(label = round(ave.ratio, 2)), hjust = 1.5, size = 2.5) +
+  geom_bar(aes(fill = ifelse(ave.ratio < 1, my.red, my.green)), stat = "identity") +
+  geom_text(aes(label = sprintf("%.2f", ave.ratio)), hjust = 1.5, vjust = 0.35, size = 3) +
   labs(title = '10 Best and Worst Passing Tacklers',
-       subtitle = '  and their actual-to-expected tackle ratios',
-       x = '') +
+       subtitle = '  and their AvE Ratios',
+       x = NULL) +
   theme_minimal() +
   theme(axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
@@ -915,22 +1050,19 @@ ggplot(act.v.exp.selected, aes(x = ave.ratio, y = reorder(name_and_pos, ave.rati
   scale_fill_identity()
 ```
 
-We can take a closer look at some individual players and the plays in which they were involved.
+## Eddie Jackson Plays
 
 ```{r}
 # Eddie Jackson id = 44925
-# Eli Apple is = 43299
 spec.player.A <- predict_all[nflId == 44925]
 
-spec.player.A[, game_and_play := paste(gameId, playId)]
-
-ggplot(spec.player.A, aes(x = reorder(seq_along(Revised_Prediction), -Revised_Prediction),
-                          y = Revised_Prediction,
-                          fill = factor(should_be_tackle))) +
-  geom_bar(stat = "identity", position = "dodge") +
-  scale_fill_manual(values = c("lightgray", "darkgreen"), 
-                    name = "Got the tackle?",
-                    labels = c("No", "Yes")) +  # Set custom legend labels
+ggplot(spec.player.A, aes(x = reorder(seq_along(Allocated_Prediction), -Allocated_Prediction),
+                          y = Allocated_Prediction,
+                          color = factor(should_be_tackle))) +
+  geom_point(position = position_dodge(width = 0.75), size = 1.5) +  # Adjust the width as needed
+  scale_color_manual(values = c("lightgray", "darkgreen"), 
+                     name = "Tackle Resulted",
+                     labels = c("No", "Yes")) +
   theme_minimal() +
   theme(
     axis.text.x = element_blank(),
@@ -938,13 +1070,44 @@ ggplot(spec.player.A, aes(x = reorder(seq_along(Revised_Prediction), -Revised_Pr
     panel.border = element_blank(),
     panel.grid.major.x = element_blank(),
     panel.grid.minor.x = element_blank(),
-    legend.position = c(0.9, 0.9),  # Adjust legend position (top right)
-    legend.justification = c(1, 1),   # Adjust legend justification (top right)
-    legend.box.background = element_rect(color = "black"),  # Add legend border
-    legend.box.margin = margin(t = 1, r = 1)  # Adjust margin around legend
+    legend.position = c(0.9, 0.9),
+    legend.justification = c(1, 1),
+    legend.box.background = element_rect(color = "black"),
+    legend.box.margin = margin(t = 1, r = 1)
   ) +
-  labs(y = "Modeled Probability", fill = "Got the tackle?") +
-  ggtitle("Eddie Jackson's Plays")
+  labs(y = "Modeled Probability", color = "Tackle Resulted") +
+  ggtitle("Eddie Jackson's Plays") +
+  ylim(0, 1)
+```
+
+## Eli Apple Plays
+
+```{r}
+# Eli Apple is = 43299
+spec.player.B <- predict_all[nflId == 43299]
+
+ggplot(spec.player.B, aes(x = reorder(seq_along(Allocated_Prediction), -Allocated_Prediction),
+                          y = Allocated_Prediction,
+                          color = factor(should_be_tackle))) +
+  geom_point(position = position_dodge(width = 0.75), size = 1.5) +  # Adjust the width as needed
+  scale_color_manual(values = c("lightgray", "darkgreen"), 
+                     name = "Tackle Resulted",
+                     labels = c("No", "Yes")) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = c(0.9, 0.9),
+    legend.justification = c(1, 1),
+    legend.box.background = element_rect(color = "black"),
+    legend.box.margin = margin(t = 1, r = 1)
+  ) +
+  labs(y = "Modeled Probability", color = "Tackle Resulted") +
+  ggtitle("Eli Apple's Plays") +
+  ylim(0, 1)
 ```
 
 Notes for self:
