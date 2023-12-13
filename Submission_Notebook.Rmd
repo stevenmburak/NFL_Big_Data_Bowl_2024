@@ -1,6 +1,5 @@
 ---
 title: "Tackling Logistic Regression"
-subtitle: "NFL Big Data Bowl 2024 - Metric Track - Steven Burak"
 output: html_notebook
 ---
 
@@ -98,7 +97,7 @@ Modeled probabilities were fine-tuned to ensure no plays had a total probability
 
 The below chart shows all of the records in our data that have modeled probabilities of at least 5%. Each bar represents one defender on one play. Higher probabilities are on the left and lower probabilities are on the right. Instances where the defender achieved the tackle are marked in green.
 
-![](images_for_submission/All_Plays_Modeled)
+![](images_for_submission/All_Plays_Modeled.png)
 
 <br>
 
@@ -118,19 +117,19 @@ Minkah Fitzpatrick (jersey number 39) is also very close to the receiver. Howeve
 
 The plot below shows the total actual tackles versus the total expected tackles for the 192 players who had at least 15 expected tackles modeled. 99 players performed below expectations and 93 performed above expectations; this even split indicates that the model is not overly punitive or overly generous. The black line shows the actual = expected line.
 
-![](images_for_submission/Act_vs_Exp_over_15)
+![](images_for_submission/Act_vs_Exp_over_15.png)
 
 <br>
 
 Let's look back at the 20 players who had the most actual passing tackles. The chart below shows the same 20 players in the same order as before (most tackles at the top). However, instead of their actual tackles being shown, we now show their AvE Ratios. 16 of the 20 players performed better than expected, some more than others. 4 of the players performed worse than expected. This demonstrates why it's important not to look solely at number of tackles when evaluating a player's tackling ability.
 
-![](images_for_submission/Actuals_20_with_AvE_Ratios)
+![](images_for_submission/Actuals_20_with_AvE_Ratios.png)
 
 <br>
 
 Who are the best and worst passing tacklers according to the model? The chart below shows the best 10 and worst 10 AvE Ratios of those who had at least 15 expected tackles modeled.
 
-![](images_for_submission/10_Best_10_Worst)
+![](images_for_submission/10_Best_10_Worst.png)
 
 <br>
 
@@ -140,7 +139,7 @@ Additionally, he was able to achieve tackles on several occasions when the model
 
 [Here is a clip](https://youtu.be/jke1evV-b2w?t=195) of a play where Eddie Jackson (#4 on the Bears) was unlikely to make the tackle according to the model, yet he achieved the tackle.
 
-![](images_for_submission/Eddie_Jackson_Plays)
+![](images_for_submission/Eddie_Jackson_Plays.png)
 
 <br>
 
@@ -148,11 +147,19 @@ Now, let's look at the plays of the worst performer - Eli Apple. Eli missed seve
 
 He also achieved almost zero unlikely tackles; he only made one tackle out of the 109 plays that had modeled probabilities below 50% - a 1% success rate on unlikely tackles compared to Eddie Jackson's 17% success rate on unlikely tackles.
 
-![](images_for_submission/Eli_Apple_Plays)
+![](images_for_submission/Eli_Apple_Plays.png)
 
 <br>
 
-## Conclusion & Applications
+## Player Dashboard
+
+I've created a simple dashboard that allows you to see the model's evaluation of specific players. Select any of the 192 players (players who had at least 15 expected tackles modeled) to see their summary statistics and the plot of each of their plays.
+
+<https://stevenmburak.shinyapps.io/nfl_big_data_bowl_2024/>
+
+<br>
+
+## Conclusion & Additional Applications
 
 I have demonstrated how this model can be used to evaluate players' passing tackle abilities compared to expectations based on the difficulty of their tackling opportunities. I used the model's results to evaluate individual players. However, applications of this model and its framework reach beyond this single analysis:
 
@@ -186,41 +193,41 @@ Below are the independent variables used by the model along with plots showing t
 
 1.  **Defender's distance from receiver.**
 
-    ![](images_for_submission/Def_Dist)
+    ![](images_for_submission/Def_Dist.png)
 
     <br>
 
 2.  **Defender's distance from receiver rank**: Ranks 4 through 11 had similar relationships to tackle results, so I opted to combine these ranks together to avoid over-complicating the model. There was enough distinction between ranks 1, 2, and 3 to justify keeping these as separate factor levels.
 
-    ![](images_for_submission/Defender_Dist_Rank_Levels)
+    ![](images_for_submission/Defender_Dist_Rank_Levels.png)
 
     <br>
 
 3.  **Is the defender in front of or behind the receiver?**
 
-    ![](images_for_submission/Front_or_Behind)
+    ![](images_for_submission/Front_or_Behind.png)
 
     <br>
 
 4.  **Directional Velocity**: For directional velocity, the positive or negative sign is determined by applying the cosine function to their angle of direction relative to the receiver's location. The relative angle is derived with the arc tangent function based on the (x,y) coordinates of both players and the angle the defender is moving. Exact formulas can be found in the **geometry_functions.R** script in the GitHub repository linked above. If the defender is moving at a speed 2 but in the exact opposite direction of the receiver's position, their directional velocity is -2. On the contrary, if the defender is moving at speed 2 and in the direction of the receiver's position exactly, their directional velocity is 2 (positive). Any angle below 90 degrees from the receiver will result in a positive directional velocity, whereas any angle above 90 degrees (below 180) will result in a negative directional velocity.
 
-    ![](images_for_submission/Dir_Vel)
+    ![](images_for_submission/Dir_Vel.png)
 
     The plot below shows the relationship between directional velocity and the defender's angle of movement relative to the position of the receiver.
 
-    ![]()![](images_for_submission/Angle_vs_Dir_Vel)
+    ![]()![](images_for_submission/Angle_vs_Dir_Vel.png)
 
     <br>
 
 5.  **Impactful Blockers**: All 10 blockers (11 offensive players on the field minus the receiver) are assigned as impactful or not for each defender separately. The number of impactful blockers is then summed for each defender, so each defender has between 0 and 10 impactful blockers. The model uses None or 1+ impactful blockers to avoid over-fitting and complication, as there was little distinction between 1 through 10 impactful blockers.
 
-    ![](images_for_submission/Impact_Blockers)
+    ![](images_for_submission/Impact_Blockers.png)
 
     <br>
 
 6.  **Receiver's distance from the nearest sideline**. The univariate relationship between the receiver's distance from the sideline and whether or not a tackle occurred is not revealing in of itself. However, this metric provides lift in the model when used in conjunction with the other independent variables.
 
-    ![](images_for_submission/Receiver_Dist_from_Sideline)
+    ![](images_for_submission/Receiver_Dist_from_Sideline.png)
 
     <br>
 
@@ -257,3 +264,9 @@ The model understandably assigned extremely low probabilities in some cases, par
 (go back to main [Fine-Tuning Modeled Probabilities] section)
 
 <br>
+
+### Contact Info
+
+[\@LinkedIn](https://www.linkedin.com/in/steven-burak/)
+
+steven.m.burak\@gmail.com
